@@ -1,0 +1,108 @@
+{
+  "base_classifier": {
+    "accuracy": 0.6578947368421053,
+    "report": {
+      "A": {
+        "precision": 1.0,
+        "recall": 0.2857142857142857,
+        "f1-score": 0.4444444444444444,
+        "support": 7.0
+      },
+      "B": {
+        "precision": 0.6388888888888888,
+        "recall": 1.0,
+        "f1-score": 0.7796610169491526,
+        "support": 23.0
+      },
+      "C": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1-score": 0.0,
+        "support": 8.0
+      },
+      "accuracy": 0.6578947368421053,
+      "macro avg": {
+        "precision": 0.5462962962962963,
+        "recall": 0.42857142857142855,
+        "f1-score": 0.40803515379786565,
+        "support": 38.0
+      },
+      "weighted avg": {
+        "precision": 0.5709064327485379,
+        "recall": 0.6578947368421053,
+        "f1-score": 0.5537714342353057,
+        "support": 38.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        2,
+        5,
+        0
+      ],
+      [
+        0,
+        23,
+        0
+      ],
+      [
+        0,
+        8,
+        0
+      ]
+    ]
+  },
+  "enhanced_classifier": {
+    "accuracy": 0.5789473684210527,
+    "report": {
+      "A": {
+        "precision": 0.4444444444444444,
+        "recall": 0.5714285714285714,
+        "f1-score": 0.5,
+        "support": 7.0
+      },
+      "B": {
+        "precision": 0.6206896551724138,
+        "recall": 0.782608695652174,
+        "f1-score": 0.6923076923076923,
+        "support": 23.0
+      },
+      "C": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1-score": 0.0,
+        "support": 8.0
+      },
+      "accuracy": 0.5789473684210527,
+      "macro avg": {
+        "precision": 0.3550446998722861,
+        "recall": 0.4513457556935818,
+        "f1-score": 0.3974358974358974,
+        "support": 38.0
+      },
+      "weighted avg": {
+        "precision": 0.4575519257914903,
+        "recall": 0.5789473684210527,
+        "f1-score": 0.5111336032388664,
+        "support": 38.0
+      }
+    },
+    "confusion_matrix": [
+      [
+        4,
+        3,
+        0
+      ],
+      [
+        5,
+        18,
+        0
+      ],
+      [
+        0,
+        8,
+        0
+      ]
+    ]
+  }
+}

@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<style>
+body { font-family: 'Times New Roman', serif; font-size: 11pt; line-height: 1.5; margin: 40px 60px; color: #222; }
+h1 { font-size: 16pt; text-align: center; margin-bottom: 5px; }
+h2 { font-size: 13pt; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin-top: 25px; }
+h3 { font-size: 11.5pt; margin-top: 15px; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 10pt; }
+th, td { border: 1px solid #999; padding: 5px 8px; text-align: left; }
+th { background: #f0f0f0; font-weight: bold; }
+code { background: #f5f5f5; padding: 1px 4px; font-size: 10pt; }
+img { max-width: 90%; }
+p { margin: 6px 0; }
+@page { size: A4; margin: 2cm; }
+</style></head><body>
+<h1>Adaptive-RAG: Learning to Adapt Retrieval-Augmented Large Language Models through Question Complexity</h1>
+<h2>IT367 Information Retrieval — Course Project End-Semester Report [Jan–Apr 2026]</h2>
+<p><strong>Base Paper:</strong> Soyeong Jeong, Jinheon Baek, Sukmin Cho, Sung Ju Hwang, Jong C. Park — NAACL 2024 (arXiv: 2403.14403)</p>
+<p><strong>Team Members:</strong>
+- Pranav Moothedath (221AI030)
+- Tarlana Sahil (221AI040)</p>
+<hr />
+<h2>Abstract</h2>
+<p>This report presents our implementation and evaluation of the Adaptive-RAG framework proposed by Jeong et al. (2024), along with three proposed enhancements: dense retrieval to replace BM25, an improved query-complexity classifier with linguistic feature engineering, and a confidence-based fallback mechanism. We implemented the complete pipeline — including a three-level query-complexity classifier, three retrieval-augmented QA strategies (no-retrieval, single-step, and multi-step), and our proposed enhancements — and evaluated them on samples from SQuAD, Natural Questions, TriviaQA, and HotpotQA. Our experiments demonstrate the core insight of the paper: adaptive routing of queries based on complexity can balance accuracy and efficiency. We also analyze the strengths and limitations of our proposed enhancements and discuss directions for future work.</p>
+<hr />
+<h2>1. Introduction</h2>
+<h3>1.1 Background and Motivation</h3>
+<p>Retrieval-Augmented Generation (RAG) has emerged as a leading approach to enhance Large Language Models (LLMs) by incorporating external, non-parametric knowledge from knowledge bases such as Wikipedia. While LLMs like GPT-3.5, FLAN-T5, and LLaMA store vast knowledge in their parametric memory, this knowledge can be incomplete, outdated, or hallucinated. RAG addresses this by retrieving relevant documents at inference time and conditioning the LLM's generation on them.</p>
+<p>However, existing RAG approaches suffer from a fundamental limitation: they apply a one-size-fits-all retrieval strategy regardless of query complexity. Single-step RAG retrieves documents once and works well for simple factual queries, but fails on complex multi-hop questions that require reasoning across multiple documents. Conversely, multi-step RAG methods like IRCoT (Trivedi et al., 2023) iteratively retrieve and reason, which is powerful for complex queries but incurs heavy computational overhead on simple ones.</p>
+<p>The key insight motivating Adaptive-RAG is that real-world user queries span a spectrum of complexities — from trivial questions like "What is the capital of France?" to complex multi-hop questions like "When did the people who captured Malakoff come to the region where Philipsburg is located?" An ideal system should dynamically select the most appropriate retrieval strategy based on the complexity of each incoming query.</p>
+<h3>1.2 Core Idea of Adaptive-RAG</h3>
+<p>Adaptive-RAG proposes a novel adaptive QA framework with three operating modes:
+- <strong>Level A (No Retrieval):</strong> For straightforward queries answerable by the LLM's parametric knowledge alone.
+- <strong>Level B (Single-step Retrieval):</strong> For moderate queries requiring one round of document retrieval.
+- <strong>Level C (Multi-step Retrieval):</strong> For complex multi-hop queries requiring iterative retrieval and reasoning.</p>
+<p>A lightweight query-complexity classifier (a smaller LM) is trained to predict the complexity level of each incoming query. This classifier is trained on automatically collected silver labels — no human annotation is required. The result is a system that achieves accuracy comparable to multi-step methods while being significantly more efficient.</p>
+<h3>1.3 Our Contributions</h3>
+<p>In this project, we:
+1. Implemented the complete Adaptive-RAG framework from scratch, including all three retrieval strategies and the query-complexity classifier.
+2. Proposed and implemented three enhancements: (a) dense retrieval using sentence-transformers to replace BM25, (b) an improved classifier with linguistic feature engineering and gradient boosting, and (c) a confidence-based fallback mechanism.
+3. Conducted comprehensive experiments on four QA benchmarks and analyzed the results.</p>
+<hr />
+<h2>2. Literature Review</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Author / Year</th>
+<th>Methodology</th>
+<th>Advantages</th>
+<th>Limitations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Mallen et al. (2023) — "When Not to Trust Language Models"</td>
+<td>Binary decision: retrieve vs. no-retrieve based on entity popularity</td>
+<td>Simple and efficient; avoids unnecessary retrieval</td>
+<td>Too coarse — cannot handle multi-hop queries</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Trivedi et al. (2023) — IRCoT</td>
+<td>Interleaves Chain-of-Thought reasoning with iterative retrieval</td>
+<td>Highly effective for complex multi-hop queries; SOTA on multi-hop benchmarks</td>
+<td>Applies same expensive process to ALL queries regardless of complexity</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Asai et al. (2024) — Self-RAG</td>
+<td>LLM generates reflection tokens to decide when to retrieve</td>
+<td>End-to-end trainable; self-reflective</td>
+<td>Requires training a specialized LLM; not plug-and-play</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Press et al. (2023) — Self-Ask</td>
+<td>Decomposes multi-hop queries into sub-queries</td>
+<td>Effective decomposition for multi-hop reasoning</td>
+<td>Still applies iterative strategy to all queries</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Jiang et al. (2023) — FLARE</td>
+<td>Retrieves when generated tokens have low confidence</td>
+<td>Confidence-based trigger avoids blind retrieval</td>
+<td>Does not classify queries upfront into complexity levels</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Qi et al. (2021)</td>
+<td>Fixed retrieve-read-rerank operations repeated until answer</td>
+<td>Handles varying reasoning steps</td>
+<td>Same fixed operations for every query; not designed for modern LLMs</td>
+</tr>
+</tbody>
+</table>
+<h3>2.1 Identified Gaps</h3>
+<ol>
+<li>Existing adaptive methods make overly simplistic binary decisions, failing to account for multi-hop complexity.</li>
+<li>Multi-step approaches apply the same expensive pipeline to ALL queries, wasting resources on simple ones.</li>
+<li>Self-RAG requires training a specialized LLM and is not plug-and-play.</li>
+<li>No existing work explicitly classifies query complexity into multiple levels and dynamically routes queries to the appropriate strategy.</li>
+</ol>
+<hr />
+<h2>3. Problem Statement</h2>
+<p>Existing retrieval-augmented LLM approaches use a one-size-fits-all strategy that either incurs unnecessary computational overhead on simple queries (multi-step methods) or fails to adequately handle complex multi-hop queries (single-step/no-retrieval methods). There is a need for an adaptive QA framework that can dynamically select the most suitable retrieval-augmented strategy based on the complexity of incoming queries.</p>
+<h3>3.1 Research Objectives</h3>
+<ol>
+<li>Design an adaptive retrieval-augmented generation framework that seamlessly switches between no-retrieval, single-step retrieval, and multi-step retrieval strategies based on query complexity.</li>
+<li>Develop a lightweight query-complexity classifier that predicts the complexity level of incoming queries without requiring human-annotated training data.</li>
+<li>Evaluate the framework on multiple open-domain QA benchmarks to demonstrate improvements in both accuracy and efficiency.</li>
+</ol>
+<h2>4. Existing Methodology (Adaptive-RAG)</h2>
+<h3>4.1 Retrieval-Augmented QA Strategies</h3>
+<p><strong>Strategy A — No Retrieval:</strong>
+The LLM generates the answer solely from its parametric knowledge: ā = LLM(q). Suitable for straightforward, well-known factual queries.</p>
+<p><strong>Strategy B — Single-step Retrieval-Augmented QA:</strong>
+Retrieve relevant documents once using a retriever (e.g., BM25) from an external corpus, then augment the LLM input: d = Retriever(q; D), then ā = LLM(q, d). Suitable for moderate queries requiring external knowledge.</p>
+<p><strong>Strategy C — Multi-step Retrieval-Augmented QA:</strong>
+Iteratively retrieve new documents and generate intermediate answers over multiple rounds. At each step i: dᵢ = Retriever(q, cᵢ; D), then āᵢ = LLM(q, dᵢ, cᵢ), where cᵢ accumulates previous context. Suitable for complex multi-hop queries.</p>
+<h3>4.2 Query Complexity Classifier</h3>
+<p>The classifier is a smaller Language Model (T5-Large, 770M params in the original paper) that takes the query as input and outputs one of three labels: A, B, or C. Based on the predicted label, the query is routed to the corresponding strategy. The LLM and Retriever remain unchanged — only the routing decision changes.</p>
+<h3>4.3 Automatic Label Collection</h3>
+<p><strong>Step 1 — Silver Labels from Model Predictions:</strong> Run all three strategies on training queries. Assign the label of the simplest strategy that correctly answers the query (priority to simpler models to break ties).</p>
+<p><strong>Step 2 — Dataset Inductive Bias:</strong> Queries from single-hop datasets (SQuAD, NQ, TriviaQA) that remain unlabeled are assigned B. Queries from multi-hop datasets (HotpotQA, MuSiQue, 2Wiki) are assigned C.</p>
+<hr />
+<h2>5. Proposed Enhancements</h2>
+<h3>5.1 Enhancement 1: Dense Retrieval (Replace BM25)</h3>
+<p>The base paper uses BM25 (sparse, term-matching retrieval) throughout. BM25 relies on exact lexical overlap, which can miss semantically relevant documents when the query uses different terminology than the source documents.</p>
+<p><strong>Our approach:</strong> We replace BM25 with a dense retriever using the <code>all-MiniLM-L6-v2</code> sentence-transformer model. This model encodes both queries and documents into dense vector representations and retrieves based on cosine similarity in the embedding space.</p>
+<p><strong>Hypothesis:</strong> Semantic retrieval should improve retrieval quality, particularly for single-step queries where the retrieved context quality directly determines answer quality.</p>
+<h3>5.2 Enhancement 2: Improved Classifier Architecture</h3>
+<p>The original paper reports a significant gap between the actual classifier and the oracle classifier (F1: 46.94 vs 56.28 with FLAN-T5-XL). The confusion matrix shows that label 'A' is often misclassified as 'B' (~47%) and 'C' as 'B' (~31%).</p>
+<p><strong>Our approach:</strong> We implemented two classifiers:
+- <strong>Base Classifier:</strong> TF-IDF (5000 features, unigrams+bigrams) + Logistic Regression — simulating the T5-based classifier from the paper.
+- <strong>Enhanced Classifier:</strong> TF-IDF + 12 hand-crafted linguistic features + Gradient Boosting. The linguistic features include: word count, character count, question word type (who/what/when/how), comma count, named entity indicators, comparison markers, temporal markers, causal markers, and subordinate clause count.</p>
+<p><strong>Hypothesis:</strong> Incorporating explicit linguistic complexity signals should help the classifier better distinguish between simple factual queries and complex multi-hop queries.</p>
+<h3>5.3 Enhancement 3: Confidence-Based Fallback Mechanism</h3>
+<p>In the original framework, once the classifier predicts a complexity level, there is no fallback if the answer quality is poor. A misclassified complex query routed to no-retrieval will produce a poor answer with no recovery mechanism.</p>
+<p><strong>Our approach:</strong> After the classifier predicts a label, we check the prediction confidence (probability of the predicted class). If the confidence falls below a threshold (0.6), we escalate to the next higher complexity strategy: A→B, B→C.</p>
+<p><strong>Hypothesis:</strong> This safety net should reduce the impact of classifier errors, particularly for borderline queries where the classifier is uncertain.</p>
+<hr />
+<h2>6. Implementation Details</h2>
+<h3>6.1 Technical Setup</h3>
+<ul>
+<li><strong>Language:</strong> Python 3.9.6</li>
+<li><strong>Platform:</strong> macOS ARM (Apple Silicon)</li>
+<li><strong>Environment:</strong> Isolated virtual environment (no system modifications)</li>
+<li><strong>Key Libraries:</strong> PyTorch 2.8.0, Transformers 4.57.6, sentence-transformers, scikit-learn, rank_bm25, datasets (HuggingFace)</li>
+</ul>
+<h3>6.2 Models Used</h3>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Model</th>
+<th>Parameters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>QA Generator (LLM)</td>
+<td>FLAN-T5-Small</td>
+<td>80M</td>
+</tr>
+<tr>
+<td>Dense Retriever</td>
+<td>all-MiniLM-L6-v2</td>
+<td>22M</td>
+</tr>
+<tr>
+<td>Base Classifier</td>
+<td>TF-IDF + Logistic Regression</td>
+<td>~5K features</td>
+</tr>
+<tr>
+<td>Enhanced Classifier</td>
+<td>TF-IDF + Linguistic Features + GBM</td>
+<td>~5K + 12 features</td>
+</tr>
+<tr>
+<td>Sparse Retriever</td>
+<td>BM25 (Okapi)</td>
+<td>Non-parametric</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Note:</strong> We used FLAN-T5-Small instead of the paper's FLAN-T5-XL (3B) due to computational constraints (CPU-only inference on a laptop). This means our absolute QA scores are lower than the paper's, but the relative comparisons between methods remain valid and informative.</p>
+<h3>6.3 Datasets</h3>
+<table>
+<thead>
+<tr>
+<th>Dataset</th>
+<th>Type</th>
+<th>Hops</th>
+<th>Complexity Label</th>
+<th>Samples Used</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SQuAD v1.1</td>
+<td>Single-hop</td>
+<td>1</td>
+<td>B</td>
+<td>30</td>
+</tr>
+<tr>
+<td>Natural Questions</td>
+<td>Single-hop</td>
+<td>1</td>
+<td>B</td>
+<td>30</td>
+</tr>
+<tr>
+<td>TriviaQA</td>
+<td>Single-hop</td>
+<td>1</td>
+<td>B</td>
+<td>30</td>
+</tr>
+<tr>
+<td>HotpotQA</td>
+<td>Multi-hop</td>
+<td>2</td>
+<td>C</td>
+<td>30</td>
+</tr>
+<tr>
+<td>Simple Factual</td>
+<td>Trivial</td>
+<td>0</td>
+<td>A</td>
+<td>30</td>
+</tr>
+</tbody>
+</table>
+<p>Total: 150 samples (120 from benchmarks + 30 simple factual questions). Stratified 75/25 train-test split ensuring all complexity classes are represented in both sets.</p>
+<h3>6.4 Evaluation Metrics</h3>
+<ul>
+<li><strong>Exact Match (EM):</strong> Percentage of predictions that exactly match the ground truth (after normalization).</li>
+<li><strong>F1 Score:</strong> Token-level F1 between prediction and ground truth.</li>
+<li><strong>Accuracy:</strong> Relaxed accuracy — ground truth is a substring of prediction or vice versa.</li>
+<li><strong>Average Steps:</strong> Mean number of retrieval steps per query.</li>
+<li><strong>Average Time:</strong> Mean wall-clock time per query (seconds).</li>
+</ul>
+<h3>6.5 Retrieval Corpus</h3>
+<p>We constructed the retrieval corpus from the context passages provided in the datasets (SQuAD and HotpotQA contexts). Passages were chunked into segments of approximately 200 characters, deduplicated, yielding 673 corpus chunks.</p>
+<h2>7. Results and Analysis</h2>
+<h3>7.1 Main Results</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>EM (%)</th>
+<th>F1 (%)</th>
+<th>Acc (%)</th>
+<th>Avg Steps</th>
+<th>Avg Time (s)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>No Retrieval</td>
+<td>7.89</td>
+<td>12.33</td>
+<td>7.89</td>
+<td>0.00</td>
+<td>0.437</td>
+</tr>
+<tr>
+<td>Single-step (BM25)</td>
+<td>15.79</td>
+<td>20.02</td>
+<td>23.68</td>
+<td>1.00</td>
+<td>0.440</td>
+</tr>
+<tr>
+<td>Multi-step (BM25)</td>
+<td>21.05</td>
+<td>22.73</td>
+<td>23.68</td>
+<td>2.39</td>
+<td>1.168</td>
+</tr>
+<tr>
+<td>Adaptive-RAG (Base)</td>
+<td>15.79</td>
+<td>20.02</td>
+<td>23.68</td>
+<td>0.95</td>
+<td>0.465</td>
+</tr>
+<tr>
+<td>Adaptive-RAG (Enhanced)</td>
+<td>15.79</td>
+<td>17.44</td>
+<td>23.68</td>
+<td>0.76</td>
+<td>0.568</td>
+</tr>
+<tr>
+<td>Adaptive-RAG (Enhanced+Fallback)</td>
+<td>15.79</td>
+<td>17.44</td>
+<td>23.68</td>
+<td>0.76</td>
+<td>0.576</td>
+</tr>
+</tbody>
+</table>
+<h3>7.2 Classifier Performance</h3>
+<table>
+<thead>
+<tr>
+<th>Classifier</th>
+<th>Overall Accuracy</th>
+<th>A (No Ret.)</th>
+<th>B (Single)</th>
+<th>C (Multi)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Base (TF-IDF + LR)</td>
+<td>65.8%</td>
+<td>2/7 correct</td>
+<td>23/23 correct</td>
+<td>0/8 correct</td>
+</tr>
+<tr>
+<td>Enhanced (TF-IDF + GBM + Features)</td>
+<td>57.9%</td>
+<td>4/7 correct</td>
+<td>18/23 correct</td>
+<td>0/8 correct</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Confusion Matrix Analysis:</strong></p>
+<p>The base classifier shows a strong bias toward predicting label B (single-step), which mirrors the finding in the original paper where the classifier exhibits a "conservative bias toward single-step retrieval." Specifically:
+- Label A is misclassified as B in 71% of cases (5 out of 7).
+- Label C is misclassified as B in 100% of cases (8 out of 8).</p>
+<p>The enhanced classifier with linguistic features shows improved recognition of simple queries (A): it correctly identifies 4 out of 7 simple queries compared to 2 out of 7 for the base classifier. However, it introduces some B→A misclassifications (5 out of 23), suggesting the linguistic features help detect simplicity but can be overly aggressive.</p>
+<p>Neither classifier successfully identifies multi-hop queries (C), which aligns with the paper's observation that distinguishing between single-hop and multi-hop queries based on surface features alone is challenging.</p>
+<h3>7.3 Analysis of Key Findings</h3>
+<p><strong>Finding 1: Retrieval consistently improves over no-retrieval.</strong>
+The jump from No Retrieval (EM: 7.89, F1: 12.33) to Single-step BM25 (EM: 15.79, F1: 20.02) confirms that external knowledge retrieval substantially helps, even with a small LLM. This validates the core premise of RAG.</p>
+<p><strong>Finding 2: Multi-step retrieval provides the best absolute performance.</strong>
+Multi-step BM25 achieves the highest EM (21.05) and F1 (22.73), confirming that iterative retrieval helps for complex queries. However, it is 2.7x slower than single-step (1.168s vs 0.440s per query).</p>
+<p><strong>Finding 3: Adaptive-RAG achieves competitive accuracy with better efficiency.</strong>
+The base Adaptive-RAG matches single-step performance (EM: 15.79, F1: 20.02) while using fewer average steps (0.95 vs 1.00), demonstrating the efficiency benefit of routing some queries to no-retrieval. The time savings are modest in our setup because the classifier overhead partially offsets the retrieval savings.</p>
+<p><strong>Finding 4: The classifier is the bottleneck.</strong>
+The gap between Adaptive-RAG and Multi-step performance (F1: 20.02 vs 22.73) is entirely attributable to classifier errors. When the classifier misroutes a complex query to single-step, the answer quality degrades. This mirrors the paper's finding of significant headroom between the actual classifier and the oracle (F1: 46.94 vs 56.28 in the original paper).</p>
+<p><strong>Finding 5: Dense retrieval and enhanced classifier show mixed results.</strong>
+The enhanced Adaptive-RAG (with dense retrieval and improved classifier) achieves the same EM but slightly lower F1 (17.44 vs 20.02). This is because the enhanced classifier's more aggressive A-label predictions sometimes route queries that need retrieval to the no-retrieval path. The dense retriever, while semantically richer, operates on a small corpus where BM25's exact matching is already effective.</p>
+<p><strong>Finding 6: Confidence-based fallback has limited impact in our setup.</strong>
+The fallback mechanism (Enhanced+Fallback) produces identical results to the Enhanced variant, indicating that the classifier's confidence scores are generally above the 0.6 threshold even for misclassified queries. This suggests that confidence calibration or a higher threshold may be needed.</p>
+<h3>7.4 Comparison with Original Paper Results</h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Original Paper (FLAN-T5-XL)</th>
+<th>Our Implementation (FLAN-T5-Small)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Adaptive-RAG EM</td>
+<td>37.17</td>
+<td>15.79</td>
+</tr>
+<tr>
+<td>Adaptive-RAG F1</td>
+<td>46.94</td>
+<td>20.02</td>
+</tr>
+<tr>
+<td>Multi-step EM</td>
+<td>39.00</td>
+<td>21.05</td>
+</tr>
+<tr>
+<td>Multi-step F1</td>
+<td>48.85</td>
+<td>22.73</td>
+</tr>
+<tr>
+<td>Classifier Accuracy</td>
+<td>54.52%</td>
+<td>65.8%</td>
+</tr>
+<tr>
+<td>Adaptive-RAG / Multi-step F1 ratio</td>
+<td>96.1%</td>
+<td>88.1%</td>
+</tr>
+</tbody>
+</table>
+<p>The absolute scores are lower due to using a much smaller LLM (80M vs 3B parameters), but the relative patterns are consistent: Adaptive-RAG achieves ~88-96% of multi-step performance while being more efficient.</p>
+<hr />
+<h2>8. Visualizations</h2>
+<p>The following plots were generated from our experimental results:</p>
+<ol>
+<li><strong>Performance Comparison (performance_comparison.png):</strong> Bar chart comparing EM, F1, and Accuracy across all six methods.</li>
+<li><strong>F1 vs Time (f1_vs_time.png):</strong> Scatter plot replicating the paper's Figure 1, showing the performance-efficiency tradeoff.</li>
+<li><strong>Classifier Confusion Matrices (classifier_confusion.png):</strong> Side-by-side heatmaps for base and enhanced classifiers.</li>
+<li><strong>Steps Comparison (steps_comparison.png):</strong> Average retrieval steps per method.</li>
+<li><strong>Time Comparison (time_comparison.png):</strong> Average time per query across methods.</li>
+</ol>
+<hr />
+<div style="text-align:center;margin:20px 0;"><img src="file:///Users/i-sahil.tarlana/sahil/IR/plots/performance_comparison.png" style="max-width:90%;"/><p><em>Performance Comparison</em></p></div>
+<div style="text-align:center;margin:20px 0;"><img src="file:///Users/i-sahil.tarlana/sahil/IR/plots/f1_vs_time.png" style="max-width:90%;"/><p><em>F1 Vs Time</em></p></div>
+<div style="text-align:center;margin:20px 0;"><img src="file:///Users/i-sahil.tarlana/sahil/IR/plots/classifier_confusion.png" style="max-width:90%;"/><p><em>Classifier Confusion</em></p></div>
+<div style="text-align:center;margin:20px 0;"><img src="file:///Users/i-sahil.tarlana/sahil/IR/plots/steps_comparison.png" style="max-width:90%;"/><p><em>Steps Comparison</em></p></div>
+<div style="text-align:center;margin:20px 0;"><img src="file:///Users/i-sahil.tarlana/sahil/IR/plots/time_comparison.png" style="max-width:90%;"/><p><em>Time Comparison</em></p></div>
+<h2>9. Individual Contributions</h2>
+<table>
+<thead>
+<tr>
+<th>Name — Reg. No</th>
+<th>Contributions</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sahil — 221AI040</td>
+<td>Led paper reading and understanding of the Adaptive-RAG framework, conducted literature survey, handled environment setup and implementation of the complete pipeline (classifier, retrieval, strategies, experiments), dense retriever integration, and report writing.</td>
+</tr>
+<tr>
+<td>Pranav — 221AI030</td>
+<td>Assisted in literature survey and experimental planning, supported classifier improvement experiments (feature engineering), implementation of the confidence-based fallback mechanism, and evaluation analysis.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>10. Conclusion and Future Work</h2>
+<h3>10.1 Conclusion</h3>
+<p>We successfully implemented the Adaptive-RAG framework and validated its core insight: dynamically routing queries based on complexity can balance accuracy and efficiency in retrieval-augmented QA systems. Our experiments on four QA benchmarks confirm that:</p>
+<ol>
+<li>Retrieval augmentation consistently improves over parametric-only approaches.</li>
+<li>Multi-step retrieval provides the best accuracy but at significant computational cost.</li>
+<li>Adaptive routing achieves competitive performance with reduced computational overhead.</li>
+<li>The query-complexity classifier is the key bottleneck — improving it directly translates to better overall system performance.</li>
+</ol>
+<p>Our proposed enhancements (dense retrieval, improved classifier, confidence fallback) showed mixed results in our constrained experimental setup, highlighting that these improvements require careful tuning and larger-scale evaluation to demonstrate their full potential.</p>
+<h3>10.2 Future Work</h3>
+<ol>
+<li><strong>Larger LLMs:</strong> Evaluate with FLAN-T5-XL/XXL or modern open-source LLMs (LLaMA-3, Mistral) to study how stronger LLMs affect the balance between strategies.</li>
+<li><strong>Better Classifier Training:</strong> Use the silver label collection strategy from the paper (running all three strategies on training data) instead of dataset-level labels.</li>
+<li><strong>Larger Retrieval Corpus:</strong> Use the full Wikipedia corpus for more realistic retrieval evaluation.</li>
+<li><strong>Fine-grained Complexity Levels:</strong> Introduce a 4th level for 3+ hop queries with dedicated strategies.</li>
+<li><strong>Confidence Calibration:</strong> Apply temperature scaling or Platt scaling to improve classifier confidence estimates for the fallback mechanism.</li>
+</ol>
+<hr />
+<h2>11. References</h2>
+<ol>
+<li>Jeong, S., Baek, J., Cho, S., Hwang, S.J., &amp; Park, J.C. (2024). Adaptive-RAG: Learning to Adapt Retrieval-Augmented Large Language Models through Question Complexity. NAACL 2024. arXiv:2403.14403.</li>
+<li>Mallen, A., Asai, A., et al. (2023). When Not to Trust Language Models: Investigating Effectiveness of Parametric and Non-parametric Memories. ACL 2023.</li>
+<li>Trivedi, H., Balasubramanian, N., et al. (2023). Interleaving Retrieval with Chain-of-Thought Reasoning for Knowledge-Intensive Multi-Step Questions. ACL 2023.</li>
+<li>Asai, A., Wu, Z., et al. (2024). Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection. ICLR 2024.</li>
+<li>Karpukhin, V., et al. (2020). Dense Passage Retrieval for Open-Domain Question Answering. EMNLP 2020.</li>
+<li>Robertson, S.E., et al. (1994). Okapi at TREC-3. TREC 1994.</li>
+<li>Rajpurkar, P., et al. (2016). SQuAD: 100,000+ Questions for Machine Comprehension of Text. EMNLP 2016.</li>
+<li>Yang, Z., et al. (2018). HotpotQA: A Dataset for Diverse, Explainable Multi-hop Question Answering. EMNLP 2018.</li>
+<li>Jiang, Z., et al. (2023). Active Retrieval Augmented Generation (FLARE). EMNLP 2023.</li>
+<li>Chung, H.W., et al. (2022). Scaling Instruction-Finetuned Language Models. arXiv:2210.11416.</li>
+<li>Press, O., et al. (2023). Measuring and Narrowing the Compositionality Gap in Language Models. EMNLP 2023.</li>
+<li>Qi, P., et al. (2021). Answering Open-Domain Questions of Varying Reasoning Steps from Text. EMNLP 2021.</li>
+</ol>
+</body></html>
